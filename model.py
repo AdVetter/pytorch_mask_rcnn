@@ -30,6 +30,8 @@ from roialign.roi_align.crop_and_resize import CropAndResizeFunction
 ############################################################
 #  Logging Utility Functions
 ############################################################
+from torch.autograd.gradcheck import zero_gradients
+
 
 def log(text, array=None):
     """Prints a text message. And, optionally, if a Numpy array is provided it
@@ -876,7 +878,9 @@ class RPN(nn.Module):
 
     def forward(self, x):
         # Shared convolutional base of the RPN
-        x = self.relu(self.conv_shared(self.padding(x)))
+        a = self.padding(x)
+        b = self.conv_shared(a)
+        x = self.relu(b)
 
         # Anchor Score. [batch, anchors per location * 2, height, width].
         rpn_class_logits = self.conv_class(x)
@@ -1569,6 +1573,65 @@ class MaskRCNN(nn.Module):
         if not os.path.exists(self.log_dir):
             os.makedirs(self.log_dir)
 
+    def attack(self, images):
+        # Mold inputs to format expected by the neural network
+        molded_images, image_metas, windows = self.mold_inputs(images)
+
+        # Convert images to torch tensor
+        molded_images = torch.from_numpy(molded_images.transpose(0, 3, 1, 2)).float()
+
+        # To GPU
+        if self.config.GPU_COUNT:
+            molded_images = molded_images.cuda()
+
+        # Wrap in variable
+        molded_images = Variable(molded_images, volatile=False, requires_grad=True)
+
+        # Target class
+        target_classes = Variable(torch.Tensor([5] * 1000)).cuda()
+
+        for i in range(5):
+            print("Round: " + str(i))
+            zero_gradients(molded_images.data)
+
+            # Run object detection
+            detections, mrcnn_mask, mrcnn_class_logits = \
+                self.predict([molded_images, image_metas], mode='attack')
+
+            # Compute losses
+            target_classes.data = mrcnn_class_logits.data.max(1)[1]
+            mrcnn_class_loss = compute_mrcnn_class_loss(target_classes, mrcnn_class_logits)
+
+            print("Loss: " + str(mrcnn_class_loss.data[0]))
+
+            # Backpropagation
+            mrcnn_class_loss.backward()
+
+            # Add gradient to image
+            molded_images.data = molded_images.data + torch.sign(molded_images.grad.data)
+
+
+        # Run object detection with modified image
+        detections, mrcnn_mask = self.predict([molded_images, image_metas], mode='inference')
+
+        # Convert to numpy
+        detections = detections.data.cpu().numpy()
+        mrcnn_mask = mrcnn_mask.permute(0, 1, 3, 4, 2).data.cpu().numpy()
+
+        # Process detections
+        results = []
+        for i, image in enumerate(images):
+            final_rois, final_class_ids, final_scores, final_masks = \
+                self.unmold_detections(detections[i], mrcnn_mask[i],
+                                       image.shape, windows[i])
+            results.append({
+                "rois": final_rois,
+                "class_ids": final_class_ids,
+                "scores": final_scores,
+                "masks": final_masks,
+            })
+        return results
+
     def detect(self, images):
         """Runs the detection pipeline.
 
@@ -1693,6 +1756,38 @@ class MaskRCNN(nn.Module):
 
             return [detections, mrcnn_mask]
 
+
+        if mode == 'attack':
+            # Network Heads
+            # Proposal classifier and BBox regressor heads
+            mrcnn_class_logits, mrcnn_class, mrcnn_bbox = self.classifier(mrcnn_feature_maps, rpn_rois)
+
+            # Detections
+            # output is [batch, num_detections, (y1, x1, y2, x2, class_id, score)] in image coordinates
+            detections = detection_layer(self.config, rpn_rois, mrcnn_class, mrcnn_bbox, image_metas)
+
+            # Convert boxes to normalized coordinates
+            # TODO: let DetectionLayer return normalized coordinates to avoid
+            #       unnecessary conversions
+            h, w = self.config.IMAGE_SHAPE[:2]
+            scale = Variable(torch.from_numpy(np.array([h, w, h, w])).float(), requires_grad=False)
+            if self.config.GPU_COUNT:
+                scale = scale.cuda()
+            detection_boxes = detections[:, :4] / scale
+
+            # Add back batch dimension
+            detection_boxes = detection_boxes.unsqueeze(0)
+
+            # Create masks for detections
+            mrcnn_mask = self.mask(mrcnn_feature_maps, detection_boxes)
+
+            # Add back batch dimension
+            detections = detections.unsqueeze(0)
+            mrcnn_mask = mrcnn_mask.unsqueeze(0)
+
+            #return [detections, mrcnn_mask]
+            return [detections, mrcnn_mask, mrcnn_class_logits]
+
         elif mode == 'training':
 
             gt_class_ids = input[2]
@@ -1804,8 +1899,6 @@ class MaskRCNN(nn.Module):
             torch.save(self.state_dict(), self.checkpoint_path.format(epoch))
 
         self.epoch = epochs
-
-
 
     def train_epoch(self, datagenerator, optimizer, steps):
         batch_count = 0
