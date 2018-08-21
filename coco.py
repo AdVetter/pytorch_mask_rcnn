@@ -493,25 +493,63 @@ if __name__ == '__main__':
         # Training - Stage 1
         print("Training network heads")
         model.train_model(dataset_train, dataset_val,
-                    learning_rate=config.LEARNING_RATE,
-                    epochs=40,
-                    layers='heads')
+                          learning_rate=config.LEARNING_RATE,
+                          epochs=40,
+                          layers='heads')
 
         # Training - Stage 2
         # Finetune layers from ResNet stage 4 and up
         print("Fine tune Resnet stage 4 and up")
         model.train_model(dataset_train, dataset_val,
-                    learning_rate=config.LEARNING_RATE,
-                    epochs=120,
-                    layers='4+')
+                          learning_rate=config.LEARNING_RATE,
+                          epochs=120,
+                          layers='4+')
 
         # Training - Stage 3
         # Fine tune all layers
         print("Fine tune all layers")
         model.train_model(dataset_train, dataset_val,
-                    learning_rate=config.LEARNING_RATE / 10,
-                    epochs=160,
-                    layers='all')
+                          learning_rate=config.LEARNING_RATE / 10,
+                          epochs=160,
+                          layers='all')
+
+    # Train or evaluate
+    if args.command == "trainwhitebox":
+        # Training dataset. Use the training set and 35K from the
+        # validation set, as as in the Mask RCNN paper.
+        dataset_train = CocoDataset()
+        dataset_train.load_coco(args.dataset, "test_train", year=args.year, auto_download=False)
+        dataset_train.prepare()
+
+        # Validation dataset
+        dataset_val = CocoDataset()
+        dataset_val.load_coco(args.dataset, "test_val", year=args.year, auto_download=args.download)
+        dataset_val.prepare()
+
+        # *** This training schedule is an example. Update to your needs ***
+
+        # Training - Stage 1
+        print("Training network heads")
+        model.train_model(dataset_train, dataset_val,
+                          learning_rate=config.LEARNING_RATE,
+                          epochs=40,
+                          layers='heads')
+
+        # Training - Stage 2
+        # Finetune layers from ResNet stage 4 and up
+        print("Fine tune Resnet stage 4 and up")
+        model.train_model(dataset_train, dataset_val,
+                          learning_rate=config.LEARNING_RATE,
+                          epochs=120,
+                          layers='4+')
+
+        # Training - Stage 3
+        # Fine tune all layers
+        print("Fine tune all layers")
+        model.train_model(dataset_train, dataset_val,
+                          learning_rate=config.LEARNING_RATE / 10,
+                          epochs=160,
+                          layers='all')
 
     elif args.command == "evaluate":
         # Validation dataset
@@ -523,4 +561,4 @@ if __name__ == '__main__':
         evaluate_coco(model, dataset_val, coco, "segm", limit=int(args.limit))
     else:
         print("'{}' is not recognized. "
-              "Use 'train' or 'evaluate'".format(args.command))
+              "Use 'train', 'trainwhitebox' or 'evaluate'".format(args.command))
