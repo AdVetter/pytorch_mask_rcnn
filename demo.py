@@ -68,13 +68,15 @@ class_names = ['BG', 'person', 'bicycle', 'car', 'motorcycle', 'airplane',
 
 # Load a random image from the images folder
 file_names = next(os.walk(IMAGE_DIR))[2]
-image = skimage.io.imread(os.path.join(IMAGE_DIR, random.choice(file_names)))
+file_name = random.choice(file_names)
+image = skimage.io.imread(os.path.join(IMAGE_DIR, file_name))
+print(file_name)
 
 # Run detection
 results = model.detect([image])
 
 # Visualize results
 r = results[0]
-visualize.display_instances(image, r['rois'], r['masks'], r['class_ids'],
+plot = visualize.display_instances(image, r['rois'], r['masks'], r['class_ids'],
                             class_names, r['scores'])
-plt.show()
+plot.show()
